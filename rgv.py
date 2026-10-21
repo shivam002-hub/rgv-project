@@ -29,4 +29,359 @@ from sklearn.neural_network import MLPClassifier
 # File paths (Google Drive)
 train_path = "/content/drive/MyDrive/pp5i_train.gr (1).csv"
 test_path = "/content/drive/MyDrive/pp5i_test.gr (1).csv"
-class_path = "/content/drive/My
+class_path = "/content/drive/MyDrive/pp5i_train_class.txt"
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Prediction function with alignment fix
+def predict_disease(classifier_name):
+    try:
+        # Load datasets
+        train_df = pd.read_csv(train_path)
+        test_df = pd.read_csv(test_path)
+        class_df = pd.read_csv(class_path, header=None)
+        class_np = class_df.to_numpy().ravel()
+
+        # Clip values
+        ttdf_rem = train_df.iloc[:, 1:].clip(20, 16000)
+        tsdf_rem = test_df.iloc[:, 1:].clip(20, 16000)
+
+        # Remove genes with <2-fold difference
+        ttdf_cal = ttdf_rem.max(axis=1) / ttdf_rem.min(axis=1)
+        del_ind = ttdf_cal[ttdf_cal < 2].index
+        train_tdf = train_df.drop(del_ind)
+        test_tdf = test_df.drop(del_ind)
+
+        # Prepare feature matrices (samples × genes)
+        X_train_full = train_tdf.drop('SNO', axis=1).T
+        X_test_full = test_tdf.drop('SNO', axis=1).T
+
+        # Align labels with samples
+        if X_train_full.shape[0] != len(class_np):
+            min_len = min(X_train_full.shape[0], len(class_np))
+            X_train_full = X_train_full.iloc[:min_len, :]
+            class_np = class_np[:min_len]
+
+        # Feature selection with f_classif
+        f_vals, _ = f_classif(X_train_full, class_np)
+        gene_scores = pd.Series(f_vals, index=X_train_full.columns)
+        top_genes = gene_scores.sort_values(ascending=False).head(25).index
+
+        X_train = X_train_full[top_genes]
+        X_test = X_test_full[top_genes]
+
+        # Encode labels
+        le = LabelEncoder()
+        y_train = le.fit_transform(class_np)
+
+        # Choose classifier
+        if classifier_name == "ExtraTrees":
+            clf = ExtraTreesClassifier(n_estimators=350, random_state=42)
+        elif classifier_name == "Naive Bayes":
+            clf = GaussianNB()
+        elif classifier_name == "Decision Tree":
+            clf = DecisionTreeClassifier()
+        elif classifier_name == "KNN":
+            clf = KNeighborsClassifier(n_neighbors=3)
+        elif classifier_name == "MLP":
+            clf = MLPClassifier(hidden_layer_sizes=(25, 25), max_iter=250, random_state=42)
+        else:
+            return "❌ Unknown classifier"
+
+        # Train & predict
+        clf.fit(X_train, y_train)
+        acc = clf.score(X_train, y_train)
+        preds = le.inverse_transform(clf.predict(X_test))
+
+        # Result
+        result = f"✅ Classifier: {classifier_name}\n"
+        result += f"✅ Accuracy: {acc:.2%}\n\n📌 Predictions:\n"
+        result += "\n".join([f"Sample {i+1}: {p}" for i, p in enumerate(preds)])
+        return result
+
+    except Exception as e:
+        import traceback
+        return f"❌ Error: {str(e)}\n{traceback.format_exc()}"
+
+# === Data preparation for global use ===
+train_df = pd.read_csv(train_path)
+test_df = pd.read_csv(test_path)
+class_df = pd.read_csv(class_path, header=None)
+class_np = class_df.to_numpy().ravel()
+
+# Clip values
+ttdf_rem = train_df.iloc[:, 1:].clip(20, 16000)
+tsdf_rem = test_df.iloc[:, 1:].clip(20, 16000)
+
+# Remove genes with <2-fold difference
+ttdf_cal = ttdf_rem.max(axis=1) / ttdf_rem.min(axis=1)
+del_ind = ttdf_cal[ttdf_cal < 2].index
+train_tdf = train_df.drop(del_ind)
+test_tdf = test_df.drop(del_ind)
+
+# Prepare feature matrices
+X_train_full = train_tdf.drop('SNO', axis=1).T
+X_test_full = test_tdf.drop('SNO', axis=1).T
+
+# Align labels with samples
+if X_train_full.shape[0] != len(class_np):
+    min_len = min(X_train_full.shape[0], len(class_np))
+    X_train_full = X_train_full.iloc[:min_len, :]
+    class_np = class_np[:min_len]
+
+# Feature selection
+f_vals, _ = f_classif(X_train_full, class_np)
+gene_scores = pd.Series(f_vals, index=X_train_full.columns)
+top_genes = gene_scores.sort_values(ascending=False).head(25).index
+
+X_train = X_train_full[top_genes]
+X_test = X_test_full[top_genes]
+
+# Encode labels
+le = LabelEncoder()
+y_train = le.fit_transform(class_np)
+
+import matplotlib.pyplot as plt
+
+def compare_classifiers():
+    results = {}
+    classifiers = {
+        "ExtraTrees": ExtraTreesClassifier(n_estimators=350, random_state=42),
+        "Naive Bayes": GaussianNB(),
+        "Decision Tree": DecisionTreeClassifier(),
+        "KNN": KNeighborsClassifier(n_neighbors=3),
+        "MLP": MLPClassifier(hidden_layer_sizes=(25, 25), max_iter=250, random_state=42)
+    }
+
+    for name, clf in classifiers.items():
+        clf.fit(X_train, y_train)
+        acc = clf.score(X_train, y_train)
+        results[name] = acc
+
+    # Show results table
+    df_results = pd.DataFrame.from_dict(results, orient="index", columns=["Accuracy"])
+    display(df_results)
+
+    # Bar chart
+    df_results.plot(kind="bar", legend=False, figsize=(6,4), ylim=(0,1))
+    plt.title("Classifier Accuracy Comparison")
+    plt.ylabel("Accuracy")
+    plt.show()
+
+compare_classifiers()
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score
+
+# Classifiers dictionary
+classifiers = {
+    "GNB": GaussianNB(),
+    "DTC": DecisionTreeClassifier(),
+    "KNC": KNeighborsClassifier(n_neighbors=3),
+    "NN": MLPClassifier(hidden_layer_sizes=(25,25), max_iter=250, random_state=42),
+    "ETC": ExtraTreesClassifier(n_estimators=350, random_state=42)
+}
+
+N_values = range(2, 31, 2)   # test different numbers of top genes
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+results = {name: [] for name in classifiers.keys()}
+
+# Loop over N genes
+for N in N_values:
+    top_genes = gene_scores.sort_values(ascending=False).head(N).index
+    X_sel = X_train_full[top_genes]
+
+    for name, clf in classifiers.items():
+        scores = []
+        for train_idx, test_idx in cv.split(X_sel, class_np):
+            X_tr, X_te = X_sel.iloc[train_idx], X_sel.iloc[test_idx]
+            y_tr, y_te = class_np[train_idx], class_np[test_idx]
+            clf.fit(X_tr, y_tr)
+            y_pred = clf.predict(X_te)
+            scores.append(accuracy_score(y_te, y_pred))
+        # Store error rate (1 - accuracy)
+        results[name].append(1 - np.mean(scores))
+
+# ---- Line Plot ----
+plt.figure(figsize=(8,5))
+for name, errs in results.items():
+    plt.plot(N_values, errs, label=name)
+plt.xlabel("N Genes")
+plt.ylabel("Error Rate")
+plt.title("Error rate against N Genes")
+plt.legend()
+plt.show()
+
+# ---- Heatmap ----
+error_matrix = pd.DataFrame(results, index=N_values)
+plt.figure(figsize=(8,6))
+sns.heatmap(error_matrix, annot=False, cmap="viridis")
+plt.title("Error rate heat map")
+plt.xlabel("Classifier")
+plt.ylabel("N Genes")
+plt.show()
+
+# ---- Best Result ----
+all_scores = []
+for name in classifiers.keys():
+    for N, err in zip(N_values, results[name]):
+        all_scores.append((1-err, N, name))  # store accuracy
+
+best_acc, best_N, best_clf = max(all_scores)
+
+print("Best N :", best_N)
+print("Best Classifier :", best_clf)
+print("Best Accuracy :", best_acc)
+
+# ============================
+# Load datasets
+# ============================
+train_df = pd.read_csv(train_path)
+test_df = pd.read_csv(test_path)
+class_df = pd.read_csv(class_path, header=None)
+class_np = class_df.to_numpy().ravel()
+
+# ============================
+# Clip values
+# ============================
+ttdf_rem = train_df.iloc[:, 1:].clip(20, 16000)
+tsdf_rem = test_df.iloc[:, 1:].clip(20, 16000)
+
+# ============================
+# Remove genes with <2-fold difference
+# ============================
+ttdf_cal = ttdf_rem.max(axis=1) / ttdf_rem.min(axis=1)
+del_ind = ttdf_cal[ttdf_cal < 2].index
+train_tdf = train_df.drop(del_ind)
+test_tdf = test_df.drop(del_ind)
+
+# ============================
+# Feature matrices
+# ============================
+X_train_full = train_tdf.drop('SNO', axis=1).T
+X_test_full = test_tdf.drop('SNO', axis=1).T
+
+# ============================
+# Align labels with samples
+# ============================
+if X_train_full.shape[0] != len(class_np):
+    min_len = min(X_train_full.shape[0], len(class_np))
+    X_train_full = X_train_full.iloc[:min_len, :]
+    class_np = class_np[:min_len]
+
+# ============================
+# Feature selection scores
+# ============================
+f_vals, _ = f_classif(X_train_full, class_np)
+gene_scores = pd.Series(f_vals, index=X_train_full.columns)
+
+print("✅ Input prepared:")
+print("X_train_full shape:", X_train_full.shape)
+print("class_np shape:", class_np.shape)
+print("Top 5 genes by score:")
+print(gene_scores.sort_values(ascending=False).head())
+
+import gradio as gr
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from sklearn.feature_selection import f_classif
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+
+def run_experiment(classifier_name, n_genes, show_chart):
+    try:
+        # ==== Step 1: Data prep (same as before) ====
+        train_df = pd.read_csv(train_path)
+        test_df = pd.read_csv(test_path)
+        class_df = pd.read_csv(class_path, header=None)
+        class_np = class_df.to_numpy().ravel()
+
+        ttdf_rem = train_df.iloc[:, 1:].clip(20, 16000)
+        tsdf_rem = test_df.iloc[:, 1:].clip(20, 16000)
+        ttdf_cal = ttdf_rem.max(axis=1) / ttdf_rem.min(axis=1)
+        del_ind = ttdf_cal[ttdf_cal < 2].index
+        train_tdf = train_df.drop(del_ind)
+        test_tdf = test_df.drop(del_ind)
+
+        X_train_full = train_tdf.drop('SNO', axis=1).T
+        X_test_full = test_tdf.drop('SNO', axis=1).T
+
+        # Align labels
+        if X_train_full.shape[0] != len(class_np):
+            min_len = min(X_train_full.shape[0], len(class_np))
+            X_train_full = X_train_full.iloc[:min_len, :]
+            class_np = class_np[:min_len]
+
+        # ==== Step 2: Feature selection ====
+        f_vals, _ = f_classif(X_train_full, class_np)
+        gene_scores = pd.Series(f_vals, index=X_train_full.columns)
+        top_genes = gene_scores.sort_values(ascending=False).head(n_genes).index
+
+        X_train = X_train_full[top_genes]
+        X_test = X_test_full[top_genes]
+
+        # ==== Step 3: Encode labels ====
+        le = LabelEncoder()
+        y_train = le.fit_transform(class_np)
+
+        # ==== Step 4: Choose classifier ====
+        classifiers = {
+            "ExtraTrees": ExtraTreesClassifier(n_estimators=350, random_state=42),
+            "Naive Bayes": GaussianNB(),
+            "Decision Tree": DecisionTreeClassifier(),
+            "KNN": KNeighborsClassifier(n_neighbors=3),
+            "MLP": MLPClassifier(hidden_layer_sizes=(25,25), max_iter=250, random_state=42),
+        }
+        clf = classifiers[classifier_name]
+
+        # ==== Step 5: Train & predict ====
+        clf.fit(X_train, y_train)
+        acc = clf.score(X_train, y_train)
+        preds = le.inverse_transform(clf.predict(X_test))
+
+        result = f"✅ Classifier: {classifier_name}\n"
+        result += f"✅ Accuracy: {acc:.2%}\n"
+        result += f"✅ N Genes: {n_genes}\n\n📌 Predictions:\n"
+        result += "\n".join([f"Sample {i+1}: {p}" for i,p in enumerate(preds)])
+
+        # ==== Step 6: Chart if requested ====
+        fig = None
+        if show_chart:
+            fig, ax = plt.subplots(figsize=(6,4))
+            gene_scores.sort_values(ascending=False).head(30).plot(kind="bar", ax=ax)
+            ax.set_title("Top 30 Gene Scores (f_classif)")
+            plt.tight_layout()
+
+        return result, fig
+
+    except Exception as e:
+        import traceback
+        return f"❌ Error: {str(e)}\n{traceback.format_exc()}", None
+
+
+# ==== Gradio Interface ====
+demo = gr.Interface(
+    fn=run_experiment,
+    inputs=[
+        gr.Dropdown(["ExtraTrees", "Naive Bayes", "Decision Tree", "KNN", "MLP"], label="Choose Classifier"),
+        gr.Slider(5, 50, value=25, step=1, label="Select Top N Genes"),
+        gr.Checkbox(label="Show Gene Score Chart?", value=False)
+    ],
+    outputs=[
+        gr.Textbox(label="Experiment Output", lines=20, max_lines=40, show_copy_button=True),
+        gr.Plot(label="Chart Output")
+    ],
+    title="🧬 Genetic Disease Prediction (User Input)",
+    description="Select classifier, number of top genes, and choose whether to show chart."
+)
+
+demo.launch()
